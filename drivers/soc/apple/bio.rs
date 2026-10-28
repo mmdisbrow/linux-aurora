@@ -265,12 +265,15 @@ const INDEX_FORMAT: u32 = 2;
 
 pub(crate) struct IdentityIndex {
     entries: KVec<Identity>,
+    // Only a successful host-store commit clears pending in-memory changes.
+    dirty: bool,
 }
 
 impl IdentityIndex {
     pub(crate) fn new() -> IdentityIndex {
         IdentityIndex {
             entries: KVec::new(),
+            dirty: false,
         }
     }
 
@@ -279,6 +282,8 @@ impl IdentityIndex {
         let Some(raw) = store.read(&identity_key())? else {
             return Ok(index);
         };
+        // The v2 writer emits exactly the header and complete identity records.
+        // A present malformed record is not evidence of an empty gallery.
         if raw.len() < 8 {
             return Err(EINVAL);
         }
@@ -294,6 +299,9 @@ impl IdentityIndex {
             let at = 8 + i * stride;
             let mut entry = Identity::ZERO;
             entry.uuid.copy_from_slice(&raw[at..at + UUID_LEN]);
+            if entry.uuid == [0; UUID_LEN] || index.contains_uuid(&entry.uuid) {
+                return Err(EINVAL);
+            }
             entry
                 .label
                 .copy_from_slice(&raw[at + UUID_LEN..at + stride]);
@@ -320,7 +328,10 @@ impl IdentityIndex {
     pub(crate) fn insert(&mut self, id: Identity) -> Result<()> {
         for existing in self.entries.iter_mut() {
             if existing.uuid == id.uuid {
-                *existing = id;
+                if existing.label != id.label {
+                    *existing = id;
+                    self.dirty = true;
+                }
                 return Ok(());
             }
         }
@@ -328,11 +339,20 @@ impl IdentityIndex {
             return Err(ENOSPC);
         }
         self.entries.push(id, GFP_KERNEL)?;
+        self.dirty = true;
         Ok(())
     }
 
-    pub(crate) fn persist(&self, store: &mut Store) -> Result<()> {
-        self.save(store)
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub(crate) fn persist(&mut self, store: &mut Store) -> Result<()> {
+        // Even an unchanged explicit write can fail after changing storage.
+        self.dirty = true;
+        self.save(store)?;
+        self.dirty = false;
+        Ok(())
     }
 
     pub(crate) fn identity_v1_for(
@@ -357,6 +377,7 @@ impl IdentityIndex {
             }
         }
         self.entries.retain(|e| listed.contains(&e.uuid));
+        self.dirty |= !dropped.is_empty();
         for uuid in listed.iter() {
             if !self.contains(uuid) {
                 self.insert(Identity {
@@ -369,7 +390,9 @@ impl IdentityIndex {
     }
 
     pub(crate) fn remove(&mut self, uuid: &[u8; UUID_LEN]) {
+        let before = self.entries.len();
         self.entries.retain(|e| e.uuid != *uuid);
+        self.dirty |= self.entries.len() != before;
     }
 
     pub(crate) fn contains_uuid(&self, uuid: &[u8; UUID_LEN]) -> bool {
@@ -660,6 +683,23 @@ pub(crate) fn capture_guide(session: &mut Session, epoch: u64, guide: Guidance) 
         session.unseen = true;
     }
     changed
+}
+
+/// Copies the active enrollment's filing data without publishing completion.
+/// The caller may persist it without holding the session lock, then must use
+/// `enrol_finish` to recheck the worker epoch before publishing a result.
+pub(crate) fn enrol_identity(
+    session: &Session,
+    epoch: u64,
+    uuid: [u8; UUID_LEN],
+) -> Option<Identity> {
+    if !worker_is_current(session, epoch) {
+        return None;
+    }
+    let Op::Enrol { label, terminal: None, .. } = &session.op else {
+        return None;
+    };
+    Some(Identity { uuid, label: *label })
 }
 
 pub(crate) fn enrol_finish(

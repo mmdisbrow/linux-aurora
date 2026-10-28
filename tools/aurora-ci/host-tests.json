@@ -1131,6 +1131,36 @@
   "rust": "1.85.0",
   "timeout": 300
  },
+{
+  "name": "tools/aurora-sep/tests/persistence/persistence-tests.py:identity",
+  "group": "aurora-sep",
+  "argv": [
+   "python3",
+   "-I",
+   "tools/aurora-sep/tests/persistence/persistence-tests.py",
+   "--suite",
+   "identity",
+   "--output",
+   "{output}"
+  ],
+  "rust": "1.85.0",
+  "timeout": 300
+ },
+{
+  "name": "tools/aurora-sep/tests/persistence/persistence-tests.py:index-format",
+  "group": "aurora-sep",
+  "argv": [
+   "python3",
+   "-I",
+   "tools/aurora-sep/tests/persistence/persistence-tests.py",
+   "--suite",
+   "index-format",
+   "--output",
+   "{output}"
+  ],
+  "rust": "1.85.0",
+  "timeout": 300
+ },
   {
    "name": "tools/aurora-sep/tests/test_adt_extract.py",
    "group": "aurora-sep",

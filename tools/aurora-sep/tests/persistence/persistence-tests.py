@@ -201,11 +201,36 @@ def atomic_suite(apple, output):
     return code, obj
 
 
-SUITES = {'atomic': atomic_suite, 'store': store_suite}
+def identity_suite(apple, output, format_only=False):
+    bio = (apple / 'bio.rs').read_text()
+    sbio = (apple / 'sbio.rs').read_text()
+    header = fixture('identity-header.rs')
+    for name, value in [('LABEL_LEN', 128), ('UUID_LEN', 16), ('MAX_IDENTITIES', 32), ('INDEX_FORMAT', 2)]:
+        if not re.search(r'const ' + name + r': (?:usize|u32) = ' + str(value) + ';', bio):
+            raise RuntimeError('Identity fixture ABI drift: ' + name)
+    header = replace_once(header, function(header, 'pub struct IdentityIndex'),
+                          function(bio, 'pub(crate) struct IdentityIndex').replace('pub(crate) struct', 'pub struct', 1))
+    middle = fixture('identity-middle.rs')
+    sep = fixture('identity-sep.rs')
+    code = header + function(bio, 'impl IdentityIndex {') + middle
+    for signature in ['fn worker_is_current(', 'pub(crate) fn enrol_finish(',
+                      'pub(crate) fn enrol_is_live(', 'fn enrol_poll(', 'fn cancel(']:
+        extracted = function(bio, signature)
+        if signature.startswith('fn '): extracted = 'pub(crate) ' + extracted
+        code += extracted + '\n'
+    code += function(bio, 'pub(crate) fn enrol_identity(') + sep
+    code += function(sbio, 'fn forget_identity(') + '\n' + function(sbio, 'fn finish_enrolment(')
+    code += '\n' + function(sbio, 'fn reconcile_identities(')
+    if format_only:
+        return code + fixture('index-format.rs'), None
+    return code + fixture('identity-tests.rs') + fixture('identity-extra.rs'), None
 
-TEST_COUNTS = {'atomic': 15, 'store': 14}
 
-MUTATIONS = {'atomic': ('catacomb.rs', 'shim::replace_file(path, &head, blob)', 'let file = shim::StoreFile::open_trunc(path)?;\nfile.write_all(0, &head)?;\nfile.write_all(HEADER as u64, blob)?;\nfile.sync()', 'partial_payload_error_preserves'), 'store': ('store_shim.c', 'if (renamed && handle) {', 'if (renamed && handle && !err) {', 'failed_dirsync_still_moves_handle')}
+SUITES = {'atomic': atomic_suite, 'store': store_suite, 'identity': identity_suite, 'index-format': lambda a,o: identity_suite(a,o,format_only=True)}
+
+TEST_COUNTS = {'atomic': 15, 'store': 14, 'identity': 31, 'index-format': 21}
+
+MUTATIONS = {'atomic': ('catacomb.rs', 'shim::replace_file(path, &head, blob)', 'let file = shim::StoreFile::open_trunc(path)?;\nfile.write_all(0, &head)?;\nfile.write_all(HEADER as u64, blob)?;\nfile.sync()', 'partial_payload_error_preserves'), 'store': ('store_shim.c', 'if (renamed && handle) {', 'if (renamed && handle && !err) {', 'failed_dirsync_still_moves_handle'), 'identity': ('bio.rs', 'self.save(store)?;\n        self.dirty = false;', 'self.dirty = false;\n        self.save(store)?;', 'retry_failed_enrollment_save'), 'index-format': ('bio.rs', 'count > MAX_IDENTITIES || raw.len() != 8 + count * stride', 'count > MAX_IDENTITIES', 'trailing_complete_record')}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

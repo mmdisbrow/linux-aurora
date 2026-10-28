@@ -205,36 +205,28 @@ impl SepData {
             return;
         };
 
-        if listed.is_empty() {
-            return;
-        }
-
-        let dropped = {
-            let mut index = self.bio_index.lock();
-            match index.reconcile_to(&listed) {
-                Ok(dropped) => dropped,
-                Err(_) => {
-                    return;
-                }
-            }
-        };
-
-        let held = {
-            let index = self.bio_index.lock();
-            index.total()
-        };
-        if dropped.is_empty() && held == listed.len() {
-            return;
-        }
         let persisted = {
-            let index = self.bio_index.lock();
+            let mut index = self.bio_index.lock();
+            // An empty list alone must not erase host identities. An already
+            // empty index can still have a confirmed deletion waiting to save.
+            if listed.is_empty() && index.total() != 0 {
+                return;
+            }
+            if index.reconcile_to(&listed).is_err() {
+                // Reconciliation may have changed part of the index before
+                // an allocation failed. Its dirty marker survives for retry.
+                return;
+            }
+            if !index.is_dirty() {
+                return;
+            }
             self.with_host_store(|store| index.persist(store))
         };
         match persisted {
             Some(Ok(())) => {},
             _ => dev_warn!(
                 self.dev,
-                "sbio: the reconciled index could not be written; it is correct in memory for this boot and will be rebuilt at the next attach\n"
+                "sbio: the reconciled index could not be written; changes remain pending for a later reconciliation\n"
             ),
         }
     }
@@ -261,31 +253,53 @@ impl SepData {
     }
 
     fn finish_enrolment(&self, outcome: core::result::Result<[u8; bio::UUID_LEN], u32>) {
+        let epoch = self.capture_epoch.load(Relaxed);
+        let outcome = match outcome {
+            Ok(uuid) => {
+                let identity = {
+                    let session = self.bio_session.lock();
+                    bio::enrol_identity(&session, epoch, uuid)
+                };
+                let Some(identity) = identity else {
+                    return;
+                };
+                // Do not hold the session lock across a host-store write.
+                // Publish Done only after its identity and label are durable.
+                let saved = {
+                    let mut index = self.bio_index.lock();
+                    match index.insert(identity) {
+                        Ok(()) => self.with_host_store(|store| index.persist(store)),
+                        Err(error) => Some(Err(error)),
+                    }
+                };
+                match saved {
+                    Some(Ok(())) => Ok(uuid),
+                    Some(Err(error)) => {
+                        dev_err!(
+                            self.dev,
+                            "enrol: enclave holds a new template but the host index could not be written ({:?})\n",
+                            error
+                        );
+                        Err(ENROL_STATUS_UNFILED)
+                    }
+                    None => {
+                        dev_err!(self.dev, "enrol: host index store unavailable; not reporting success\n");
+                        Err(ENROL_STATUS_UNFILED)
+                    }
+                }
+            }
+            Err(status) => Err(status),
+        };
         let filed = {
             let mut session = self.bio_session.lock();
             let mut index = self.bio_index.lock();
-            bio::enrol_finish(
-                &mut session, self.capture_epoch.load(Relaxed), &mut index, outcome,
-            )
+            // Cancellation/close may have happened during the write. The
+            // original epoch check must still precede terminal publication.
+            bio::enrol_finish(&mut session, epoch, &mut index, outcome)
         };
-        if !filed {
-            return;
+        if filed {
+            self.bio_wake();
         }
-        // lock ordering: store lock outside the session lock (UAF otherwise)
-        if outcome.is_ok() {
-            let index = self.bio_index.lock();
-            let saved = self.with_host_store(|store| index.persist(store));
-            match saved {
-                Some(Ok(())) => {},
-                Some(Err(e)) => dev_err!(
-                    self.dev,
-                    "enrol: enclave holds a new template but the host index could not be written ({:?})\n",
-                    e
-                ),
-                None => {}
-            }
-        }
-        self.bio_wake();
     }
 
     fn bio_wake(&self) {

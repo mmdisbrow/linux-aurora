@@ -95,11 +95,14 @@ fn identity_key(){}
 struct IdentityIndex{entries:KVec<Identity>}
 impl IdentityIndex{
  fn new()->Self{Self{entries:KVec::new()}}
+ CONTAINS_UUID
  METHOD
 }
 fn image(count:u32,n:usize)->Vec<u8>{
  let mut v=Vec::from(INDEX_FORMAT.to_le_bytes());v.extend(count.to_le_bytes());
- v.resize(8+n*(UUID_LEN+LABEL_LEN),0);v
+ v.resize(8+n*(UUID_LEN+LABEL_LEN),0);
+ for i in 0..n {v[8+i*(UUID_LEN+LABEL_LEN)]=(i+1) as u8;}
+ v
 }
 fn main(){
  assert!(IdentityIndex::load(&mut Store(None)).unwrap().entries.is_empty());
@@ -313,10 +316,13 @@ class Preservation(unittest.TestCase):
 
     def test_index_requires_complete_record(self):
         method=body((ROOT/'bio.rs').read_text(),'    pub(crate) fn load(store:')
-        self.run_rust(INDEX.replace('METHOD',method))
+        bio=(ROOT/'bio.rs').read_text()
+        contains=body(bio,'    fn contains(')+'\n'+body(bio,'    pub(crate) fn contains_uuid(')
+        fixture=INDEX.replace('CONTAINS_UUID',contains)
+        self.run_rust(fixture.replace('METHOD',method))
         old=method.replace('if raw.len() < 8 {\n            return Err(EINVAL);','if raw.len() < 8 {\n            return Ok(index);',1)
         self.assertNotEqual(old,method)
-        self.run_rust(INDEX.replace('METHOD',old),should_pass=False)
+        self.run_rust(fixture.replace('METHOD',old),should_pass=False)
 
     def test_refused_keybag_requires_canonical_writer_record(self):
         text=(ROOT/'keybag.rs').read_text()
