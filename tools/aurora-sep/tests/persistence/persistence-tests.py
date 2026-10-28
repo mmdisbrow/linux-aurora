@@ -150,16 +150,10 @@ def source_module(name, path):
 
 def atomic_c(apple):
     c = (apple / 'store_shim.c').read_text()
-    support = '''
-#define min_t(t,a,b) ((t)(a)<(t)(b)?(t)(a):(t)(b))
-static struct inode *d_inode(struct dentry *d) { return &d->inode; }
-static loff_t i_size_read(struct inode *i) { (void)i;abort(); }
-static void *kmalloc(size_t n,int f) { (void)n;(void)f;abort(); }
-static ssize_t kernel_read(struct file*f,void*b,size_t n,loff_t*p) { (void)f;(void)b;(void)n;(void)p;abort(); }
-'''
-    signatures = ['static int store_write_all(', 'static int store_copy_tail(',
-                  'static int store_remove_temp(', 'static int store_replace(', 'int sep_store_replace(', 'int sep_store_create(', 'int sep_store_sync_parent(']
-    c = fixture('atomic-vfs.h') + support + '\n'.join(function(c, s) for s in signatures)
+    signatures = ['static int store_write_all(', 'static int store_remove_temp(',
+                  'static int store_replace(', 'int sep_store_replace(',
+                  'int sep_store_sync_parent(']
+    c = fixture('atomic-vfs.h') + '\n'.join(function(c, s) for s in signatures)
     return c
 
 

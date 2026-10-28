@@ -101,42 +101,6 @@ static int store_write_all(struct file *file, const void *buf, size_t len,
 	return 0;
 }
 
-/* Stream the unchanged part of a host store without a multi-megabyte allocation. */
-static int store_copy_tail(struct file *to, struct file *from, loff_t offset,
-			   loff_t size)
-{
-	loff_t out = offset;
-	void *buf;
-	int err = 0;
-
-	if (size < offset)
-		return -EINVAL;
-	if (i_size_read(file_inode(from)) != size)
-		return -ESTALE;
-	buf = kmalloc(32768, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-	while (offset < size) {
-		ssize_t n = kernel_read(from, buf, min_t(loff_t, size - offset, 32768), &offset);
-
-		if (n < 0) {
-			err = n;
-			break;
-		}
-		if (!n) {
-			err = -EIO;
-			break;
-		}
-		err = store_write_all(to, buf, n, &out);
-		if (err)
-			break;
-	}
-	if (!err && i_size_read(file_inode(from)) != size)
-		err = -ESTALE;
-	kfree(buf);
-	return err;
-}
-
 /* Remove only the temporary dentry we opened, never a name reused by another task. */
 static int store_remove_temp(struct file *dir, struct file *temp)
 {
@@ -167,8 +131,7 @@ static int store_remove_temp(struct file *dir, struct file *temp)
  * directory fsync failure returns an error but cannot safely undo that rename.
  */
 static int store_replace(const char *path, const void *head, size_t head_len,
-			 const void *body, size_t body_len, void **handle,
-			 loff_t expected_size, bool exclusive)
+			 const void *body, size_t body_len)
 {
 	const char *base = strrchr(path, '/');
 	const struct cred *old;
@@ -212,7 +175,7 @@ static int store_replace(const char *path, const void *head, size_t head_len,
 		snprintf(temporary, sizeof(temporary), ".sep-%016llx%016llx.tmp",
 			 (unsigned long long)nonce[0], (unsigned long long)nonce[1]);
 		temp = file_open_root(&dir->f_path, temporary,
-			(handle ? O_RDWR : O_WRONLY) | O_CREAT | O_EXCL | O_NOFOLLOW | O_LARGEFILE, 0600);
+			O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_LARGEFILE, 0600);
 		if (PTR_ERR_OR_ZERO(temp) != -EEXIST)
 			break;
 	}
@@ -222,12 +185,8 @@ static int store_replace(const char *path, const void *head, size_t head_len,
 		goto out_dir;
 	}
 	err = store_write_all(temp, head, head_len, &pos);
-	if (!err) {
-		if (handle)
-			err = store_copy_tail(temp, *handle, head_len, expected_size);
-		else
-			err = store_write_all(temp, body, body_len, &pos);
-	}
+	if (!err)
+		err = store_write_all(temp, body, body_len, &pos);
 	if (!err)
 		err = vfs_fsync(temp, 0);
 	if (err)
@@ -243,12 +202,7 @@ static int store_replace(const char *path, const void *head, size_t head_len,
 	name = (struct qstr)QSTR_INIT(base + 1, strlen(base + 1));
 	err = start_renaming_dentry(&rd, 0, temp->f_path.dentry, &name);
 	if (!err) {
-		if (exclusive && d_is_positive(rd.new_dentry))
-			err = -EEXIST;
-		else if (handle && (!d_is_positive(rd.new_dentry) ||
-			       d_inode(rd.new_dentry) != file_inode((struct file *)*handle)))
-			err = -ESTALE;
-		else if (d_is_positive(rd.new_dentry) && !d_is_reg(rd.new_dentry))
+		if (d_is_positive(rd.new_dentry) && !d_is_reg(rd.new_dentry))
 			err = -EINVAL;
 		else
 			err = security_path_rename(&dir->f_path, rd.old_dentry,
@@ -270,18 +224,7 @@ out_temp:
 		if (cleanup)
 			pr_warn("apple-sep: temporary store cleanup failed (%d)\n", cleanup);
 	}
-	/* Rename committed the new inode even when the parent fsync failed. Keep
-	 * future reads/writes on that inode; never continue on an unlinked old one.
-	 */
-	if (renamed && handle) {
-		struct file *previous = *handle;
-
-		*handle = temp;
-		temp = NULL;
-		fput(previous);
-	}
-	if (temp)
-		fput(temp);
+	fput(temp);
 out_dir:
 	fput(dir);
 out_creds:
@@ -292,25 +235,7 @@ out_creds:
 int sep_store_replace(const char *path, const void *head, size_t head_len,
 		      const void *body, size_t body_len)
 {
-	return store_replace(path, head, head_len, body, body_len, NULL, 0, false);
-}
-
-/* Initial key material must not replace a file published by another caller
- * after the absence check. The destination check shares rename's lock. */
-int sep_store_create(const char *path, const void *body, size_t body_len)
-{
-	return store_replace(path, NULL, 0, body, body_len, NULL, 0, true);
-}
-
-/* Caller exclusively owns *handle; on a committed rename its reference moves
- * to the replacement inode, including when directory fsync reports an error.
- */
-int sep_store_replace_header(void **handle, const char *path,
-			     const void *head, size_t head_len, u64 expected_size)
-{
-	if (expected_size > LLONG_MAX)
-		return -EINVAL;
-	return store_replace(path, head, head_len, NULL, 0, handle, expected_size, false);
+	return store_replace(path, head, head_len, body, body_len);
 }
 
 /*
