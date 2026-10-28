@@ -72,10 +72,10 @@ const SB_SLOT_TABLE: usize = 64;
 const SLOT_ENTRY_SIZE: usize = 24;
 const SB_SLOT_TABLE_END: usize = SB_SLOT_TABLE + SLOT_COUNT * SLOT_ENTRY_SIZE;
 
-/// The superblock is rewritten in place, so the format relies on the device
-/// writing at least this much of it atomically: a torn write of the slot table
-/// would mix entries of two tables. Every field a reader uses lies within it.
-/// NVMe storage on Apple silicon has 4 KiB logical blocks.
+/// Legacy in-place writers relied on this atomic-write size. Buffered file
+/// writes do not provide that guarantee. Production StoreFile now publishes
+/// each header through atomic inode replacement; this size remains only for
+/// compatibility tests of the old writer's assumed failure model.
 const ATOMIC_WRITE: usize = 4096;
 static_assert!(SB_SLOT_TABLE_END <= ATOMIC_WRITE);
 
@@ -111,6 +111,10 @@ pub(crate) trait StoreIo {
     fn read_exact(&self, off: u64, buf: &mut [u8]) -> Result;
     fn write_all(&self, off: u64, buf: &[u8]) -> Result;
     fn sync(&self) -> Result;
+    /// Publish a complete header without exposing a partially updated table.
+    /// Preserve the tail and follow a committed replacement with future I/O,
+    /// even if an error reports uncertain directory durability after rename.
+    fn write_header(&mut self, buf: &[u8]) -> Result;
 }
 
 impl StoreIo for shim::StoreFile {
@@ -128,6 +132,10 @@ impl StoreIo for shim::StoreFile {
 
     fn sync(&self) -> Result {
         shim::StoreFile::sync(self)
+    }
+
+    fn write_header(&mut self, buf: &[u8]) -> Result {
+        self.replace_header(STORE_PATH, buf, STORE_SIZE as u64)
     }
 }
 
@@ -348,7 +356,7 @@ impl<F: StoreIo> Store<F> {
             sb[off + 18..off + 22].copy_from_slice(&slot.len.to_le_bytes());
         }
 
-        self.file.write_all(0, &sb)
+        self.file.write_header(&sb)
     }
 
     fn find(&self, key: &Key) -> Option<usize> {
@@ -502,6 +510,10 @@ mod tests {
     }
 
     impl StoreIo for &MemoryFile {
+        fn write_header(&mut self, buf: &[u8]) -> Result {
+            self.write_all(0, buf)
+        }
+
         fn size(&self) -> Result<u64> {
             if self.dead.get() {
                 return Err(EIO);

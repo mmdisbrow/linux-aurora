@@ -148,6 +148,23 @@ def source_module(name, path):
     return '#[path=' + json.dumps(str(path)) + '] mod ' + name + ';\n'
 
 
+def store_suite(apple, output):
+    signatures = ['static int store_write_all(', 'static int store_copy_tail(',
+                  'static int store_remove_temp(', 'static int store_replace(',
+                  'int sep_store_replace(', 'int sep_store_create(', 'int sep_store_replace_header(',
+                  'void *sep_store_open_host(', 'void *sep_store_open_ro(',
+                  'void sep_store_close(', 'long long sep_store_size(',
+                  'long sep_store_read(', 'long sep_store_write(', 'int sep_store_sync(']
+    text = (apple / 'store_shim.c').read_text()
+    c = fixture('store-vfs.h') + '\n' + '\n'.join(function(text, s) for s in signatures)
+    obj = output / 'vfs.o'
+    c_build(c, obj)
+    common = base_common()
+    common += '\nmacro_rules! pr_info{($($a:tt)*)=>{{()}}} macro_rules! pr_warn{($($a:tt)*)=>{{()}}} macro_rules! pr_err{($($a:tt)*)=>{{()}}}\n'
+    code = common + error_functions() + shim_module(apple) + source_module('store', apple / 'store.rs')
+    return code + fixture('store.rs') + fixture('store-reopen.rs'), obj
+
+
 def atomic_c(apple):
     c = (apple / 'store_shim.c').read_text()
     support = '''
@@ -184,11 +201,11 @@ def atomic_suite(apple, output):
     return code, obj
 
 
-SUITES = {'atomic': atomic_suite}
+SUITES = {'atomic': atomic_suite, 'store': store_suite}
 
-TEST_COUNTS = {'atomic': 15}
+TEST_COUNTS = {'atomic': 15, 'store': 14}
 
-MUTATIONS = {'atomic': ('catacomb.rs', 'shim::replace_file(path, &head, blob)', 'let file = shim::StoreFile::open_trunc(path)?;\nfile.write_all(0, &head)?;\nfile.write_all(HEADER as u64, blob)?;\nfile.sync()', 'partial_payload_error_preserves')}
+MUTATIONS = {'atomic': ('catacomb.rs', 'shim::replace_file(path, &head, blob)', 'let file = shim::StoreFile::open_trunc(path)?;\nfile.write_all(0, &head)?;\nfile.write_all(HEADER as u64, blob)?;\nfile.sync()', 'partial_payload_error_preserves'), 'store': ('store_shim.c', 'if (renamed && handle) {', 'if (renamed && handle && !err) {', 'failed_dirsync_still_moves_handle')}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

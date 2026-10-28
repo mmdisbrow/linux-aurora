@@ -9,6 +9,8 @@ extern "C" {
     fn sep_store_open(path: *const c_char) -> *mut c_void;
     fn sep_store_open_host(path: *const c_char, created: *mut bool) -> *mut c_void;
     fn sep_store_open_trunc(path: *const c_char) -> *mut c_void;
+    fn sep_store_replace_header(handle: *mut *mut c_void, path: *const c_char,
+                                 head: *const c_void, head_len: usize, expected_size: u64) -> c_int;
     fn sep_store_replace(path: *const c_char, head: *const c_void, head_len: usize,
                          body: *const c_void, body_len: usize) -> c_int;
     fn sep_store_open_ro(path: *const c_char) -> *mut c_void;
@@ -63,6 +65,20 @@ fn result_of(ret: c_long) -> Result<usize> {
 }
 
 impl StoreFile {
+    /// Replaces the file's header atomically, retaining all bytes after it.
+    /// A committed rename updates our handle even if directory fsync fails.
+    pub(crate) fn replace_header(&mut self, path: &CStr, head: &[u8], expected_size: u64) -> Result<()> {
+        // SAFETY: we exclusively own the live file reference. The shim either
+        // retains it or consumes it and returns a replacement live reference;
+        // both outcomes preserve the StoreFile invariant, including on errors.
+        // Path and header remain valid and are not retained after this call.
+        let ret = unsafe {
+            sep_store_replace_header(&mut self.handle, path.as_char_ptr(),
+                                     head.as_ptr().cast(), head.len(), expected_size)
+        };
+        kernel::error::to_result(ret)
+    }
+
     pub(crate) fn open(path: &CStr) -> Result<StoreFile> {
         // SAFETY: `path` is NUL-terminated; the shim returns a live file or
         // an error pointer, as required by `from_err_ptr`.
