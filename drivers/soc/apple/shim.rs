@@ -13,6 +13,7 @@ extern "C" {
                                  head: *const c_void, head_len: usize, expected_size: u64) -> c_int;
     fn sep_store_replace(path: *const c_char, head: *const c_void, head_len: usize,
                          body: *const c_void, body_len: usize) -> c_int;
+    fn sep_store_create(path: *const c_char, body: *const c_void, body_len: usize) -> c_int;
     fn sep_store_open_ro(path: *const c_char) -> *mut c_void;
     fn sep_store_open_block(path: *const c_char, writable: c_int) -> *mut c_void;
     fn sep_store_close(handle: *mut c_void);
@@ -40,6 +41,18 @@ pub(crate) fn replace_file(path: &CStr, head: &[u8], body: &[u8]) -> Result<()> 
     let ret = unsafe {
         sep_store_replace(path.as_char_ptr(), head.as_ptr().cast(), head.len(),
                           body.as_ptr().cast(), body.len())
+    };
+    kernel::error::to_result(ret)
+}
+
+/// Publishes a complete new file without replacing an existing destination.
+/// A post-rename sync error may leave the new file visible; callers must not
+/// retry by truncating it or assume that the error proves absence.
+pub(crate) fn create_file(path: &CStr, body: &[u8]) -> Result<()> {
+    // SAFETY: path is NUL-terminated and the byte slice remains valid until
+    // the synchronous call returns. The shim retains neither pointer.
+    let ret = unsafe {
+        sep_store_create(path.as_char_ptr(), body.as_ptr().cast(), body.len())
     };
     kernel::error::to_result(ret)
 }

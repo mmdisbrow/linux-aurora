@@ -179,12 +179,12 @@ impl SepData {
 
         let existing = match shim::StoreFile::open_readonly(path) {
             Ok(file) => Some(file),
-            Err(ENOENT) => None,
-            Err(error) => {
+            Err(e) if e == ENOENT => None,
+            Err(e) => {
                 dev_err!(
                     self.dev,
-                    "sks: cannot read existing machine ref-key: {:?}; refusing replacement\n",
-                    error
+                    "sks: could not open the machine ref-key ({:?}); refusing replacement\n",
+                    e
                 );
                 return;
             }
@@ -195,6 +195,11 @@ impl SepData {
                 let mut blob: KVec<u8> = KVec::new();
                 if blob.resize(sz as usize, 0u8, GFP_KERNEL).is_ok()
                     && f.read_exact(0, &mut blob).is_ok()
+                    // A previous publication may have failed after rename.
+                    // Visibility alone must not let a retry cache a key whose
+                    // file or directory entry has not been synchronized.
+                    && f.sync().is_ok()
+                    && f.sync_parent().is_ok()
                     && self.cache_machine_refkey(blob)
                 {
                     return;
@@ -214,12 +219,11 @@ impl SepData {
             );
             return;
         };
-        let Ok(f) = shim::StoreFile::open(path) else {
-            dev_err!(self.dev, "sks: could not persist machine ref-key\n");
-            return;
-        };
-        if f.write_all(0, &blob).is_err() || f.sync().is_err() {
-            dev_err!(self.dev, "sks: machine ref-key persistence failed\n");
+        // Publish a complete file and sync its parent before caching the key.
+        // An initial absence check is not permission to replace a file that
+        // another caller published in the meantime.
+        if let Err(error) = shim::create_file(path, &blob) {
+            dev_err!(self.dev, "sks: machine ref-key publication failed ({:?})\n", error);
             return;
         }
         let _ = self.cache_machine_refkey(blob);

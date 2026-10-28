@@ -55,6 +55,7 @@ mod module_parameters {
 }
 mod shim {
  use super::*;
+ pub fn create_file(_: &CStr,_:&[u8])->Result<()>{panic!("fixture never permits publication")}
  pub struct StoreFile;
  impl StoreFile {
   pub fn open_readonly(_: &CStr)->Result<Self>{OPEN_ERROR.with(|e|if e.get()==0{Ok(Self)}else{Err(e.get())})}
@@ -62,7 +63,8 @@ mod shim {
   pub fn size(&self)->Result<u64>{Ok(1)}
   pub fn read_exact(&self,_:u64,_:&mut[u8])->Result<()>{Ok(())}
   pub fn write_all(&self,_:u64,_:&[u8])->Result<()>{panic!("write")}
-  pub fn sync(&self)->Result<()>{panic!("sync")}
+  pub fn sync(&self)->Result<()>{Ok(())}
+  pub fn sync_parent(&self)->Result<()>{Ok(())}
  }
 }
 struct Cache;
