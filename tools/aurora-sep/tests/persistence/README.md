@@ -7,3 +7,5 @@ Run `python3 -I tools/aurora-sep/tests/persistence/persistence-tests.py --suite 
 The store suite compiles the real host-store implementation and verifies atomic header publication, old-handle replacement after uncertain directory sync, and reopen/retry behavior. Run the same command with `--suite store` and a different output directory.
 
 The identity suite compiles the actual enrollment completion and reconciliation paths. It checks that Done follows a durable index write, cancellation/close during that write prevents late completion, and failed commits or partial reconciliation retain a dirty marker for retry. The index-format suite also rejects zero/duplicate UUIDs in present records; exact size/count checks already come from #234.
+
+The keybag suite compiles the real record writer/parser and checks intent, refusal and committed snapshot replacement under VFS faults. It preserves #234's canonical refusal validation without another reader implementation. Temporary secret-bearing buffers are wiped on drop.

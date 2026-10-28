@@ -339,15 +339,15 @@ fn write_record(
     head[OFF_UUID..OFF_UUID + UUID_LEN].copy_from_slice(uuid);
     head[OFF_SECRET_LEN..OFF_SECRET_LEN + 4].copy_from_slice(&(secret.len() as u32).to_le_bytes());
 
-    let file = shim::StoreFile::open_trunc(slot.path())?;
-    // Body first, then the header that vouches for it: a crash between leaves a
-    // bad checksum, which `read` refuses — the safe side.
-    if !wrapped.is_empty() {
-        file.write_all(HEADER as u64, wrapped)?;
-    }
-    if !secret.is_empty() {
-        file.write_all((HEADER + wrapped.len()) as u64, secret)?;
-    }
-    file.write_all(0, &head)?;
-    file.sync()
+    // Prepare the complete replacement before touching the committed file.
+    // The body contains the bag secret, so wipe it on every return path.
+    let mut body = crate::Secret(KVec::with_capacity(wrapped.len() + secret.len(), GFP_KERNEL)?);
+    body.0.extend_from_slice(wrapped, GFP_KERNEL)?;
+    body.0.extend_from_slice(secret, GFP_KERNEL)?;
+
+    // Success requires both file and parent-directory sync. A failed sync
+    // after rename can leave the complete new generation visible; propagate
+    // the error instead of authorizing creation or reporting a saved snapshot.
+    // This protects host-file publication, not SEP anti-replay rollback.
+    shim::replace_file(slot.path(), &head, &body)
 }

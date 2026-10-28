@@ -201,6 +201,19 @@ def atomic_suite(apple, output):
     return code, obj
 
 
+def keybag_suite(apple, output):
+    obj = output / 'vfs.o'
+    c_build(atomic_c(apple), obj)
+    common = base_common()
+    common = replace_once(common, 'let mut v = Vec::new();',
+                          'if crate::BODY_ALLOC_FAIL.with(|v| v.get()) { return Err(ENOMEM); }\n'
+                          'let mut v = Vec::new();')
+    code = common + error_functions() + shim_module(apple) + crc_module(apple)
+    code += source_module('keybag_identity', apple / 'keybag_identity.rs')
+    code += source_module('keybag', apple / 'keybag.rs')
+    return code + fixture('keybag.rs'), obj
+
+
 def identity_suite(apple, output, format_only=False):
     bio = (apple / 'bio.rs').read_text()
     sbio = (apple / 'sbio.rs').read_text()
@@ -226,11 +239,11 @@ def identity_suite(apple, output, format_only=False):
     return code + fixture('identity-tests.rs') + fixture('identity-extra.rs'), None
 
 
-SUITES = {'atomic': atomic_suite, 'store': store_suite, 'identity': identity_suite, 'index-format': lambda a,o: identity_suite(a,o,format_only=True)}
+SUITES = {'atomic': atomic_suite, 'store': store_suite, 'identity': identity_suite, 'index-format': lambda a,o: identity_suite(a,o,format_only=True), 'keybag': keybag_suite}
 
-TEST_COUNTS = {'atomic': 15, 'store': 14, 'identity': 31, 'index-format': 21}
+TEST_COUNTS = {'atomic': 15, 'store': 14, 'identity': 31, 'index-format': 21, 'keybag': 23}
 
-MUTATIONS = {'atomic': ('catacomb.rs', 'shim::replace_file(path, &head, blob)', 'let file = shim::StoreFile::open_trunc(path)?;\nfile.write_all(0, &head)?;\nfile.write_all(HEADER as u64, blob)?;\nfile.sync()', 'partial_payload_error_preserves'), 'store': ('store_shim.c', 'if (renamed && handle) {', 'if (renamed && handle && !err) {', 'failed_dirsync_still_moves_handle'), 'identity': ('bio.rs', 'self.save(store)?;\n        self.dirty = false;', 'self.dirty = false;\n        self.save(store)?;', 'retry_failed_enrollment_save'), 'index-format': ('bio.rs', 'count > MAX_IDENTITIES || raw.len() != 8 + count * stride', 'count > MAX_IDENTITIES', 'trailing_complete_record')}
+MUTATIONS = {'atomic': ('catacomb.rs', 'shim::replace_file(path, &head, blob)', 'let file = shim::StoreFile::open_trunc(path)?;\nfile.write_all(0, &head)?;\nfile.write_all(HEADER as u64, blob)?;\nfile.sync()', 'partial_payload_error_preserves'), 'store': ('store_shim.c', 'if (renamed && handle) {', 'if (renamed && handle && !err) {', 'failed_dirsync_still_moves_handle'), 'identity': ('bio.rs', 'self.save(store)?;\n        self.dirty = false;', 'self.dirty = false;\n        self.save(store)?;', 'retry_failed_enrollment_save'), 'index-format': ('bio.rs', 'count > MAX_IDENTITIES || raw.len() != 8 + count * stride', 'count > MAX_IDENTITIES', 'trailing_complete_record'), 'keybag': ('keybag.rs', 'shim::replace_file(slot.path(), &head, &body)', 'let file = shim::StoreFile::open_trunc(slot.path())?;\nfile.write_all(0, &head)?;\nfile.write_all(HEADER as u64, &body)?;\nfile.sync()', 'snapshot_first_write_failure_preserves_previous_generation')}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
